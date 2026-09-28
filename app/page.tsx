@@ -20,6 +20,7 @@ import {
   RotateCcw,
   Phone,
   Pencil,
+  ChevronDown,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
@@ -340,23 +341,54 @@ export default function FutsalDashboard() {
               variant="ghost"
               size="icon"
               onClick={goPrev}
-              className="text-slate-400 hover:text-white hover:bg-white/10"
+              className="size-9 rounded-xl border border-white/10 bg-white/[0.04] text-slate-300 hover:text-white hover:bg-white/[0.08] hover:border-white/20 active:scale-90 transition-all shadow-sm cursor-pointer"
               aria-label="Previous day"
+              title="Previous day"
             >
-              <ArrowLeft className="size-5" />
+              <ArrowLeft className="size-4" />
             </Button>
 
             <Popover open={calendarOpen} onOpenChange={setCalendarOpen}>
               <PopoverTrigger
-                className="flex items-center gap-2 rounded-lg px-3 py-1.5 text-sm font-semibold transition-colors hover:bg-white/[0.06] cursor-pointer"
+                className="group flex items-center gap-2.5 rounded-xl border border-white/10 bg-white/[0.04] px-3.5 py-1.5 shadow-sm transition-all duration-200 hover:border-blue-500/40 hover:bg-white/[0.08] hover:shadow-md hover:shadow-blue-500/10 active:scale-95 cursor-pointer"
+                title="Click to choose a date"
+                aria-label="Choose date from calendar"
               >
-                <CalendarDays className="size-4 text-blue-400" />
-                <span className="text-white">{formatDisplayDate(selectedDate)}</span>
-                {isToday(selectedDate) && (
-                  <span className="ml-1 rounded-full bg-blue-500/20 px-2 py-0.5 text-[10px] font-bold uppercase tracking-wider text-blue-400">
+                <div className="flex size-6 items-center justify-center rounded-lg bg-blue-500/15 text-blue-400 group-hover:bg-blue-500/25 group-hover:scale-105 transition-all">
+                  <CalendarDays className="size-3.5" />
+                </div>
+                <span className="text-sm font-semibold tracking-tight text-white group-hover:text-blue-200 transition-colors">
+                  {formatDisplayDate(selectedDate)}
+                </span>
+                {isToday(selectedDate) ? (
+                  <span className="rounded-full bg-blue-500/20 border border-blue-500/30 px-2 py-0.5 text-[10px] font-bold uppercase tracking-wider text-blue-400">
+                    Today
+                  </span>
+                ) : (
+                  <span
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      goToday();
+                    }}
+                    role="button"
+                    tabIndex={0}
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter" || e.key === " ") {
+                        e.stopPropagation();
+                        goToday();
+                      }
+                    }}
+                    className="rounded-full bg-white/[0.06] hover:bg-blue-500/25 hover:text-blue-300 px-2 py-0.5 text-[10px] font-medium text-slate-400 transition-colors border border-white/10 cursor-pointer"
+                    title="Jump back to today"
+                  >
                     Today
                   </span>
                 )}
+                <ChevronDown
+                  className={`size-3.5 text-slate-400 group-hover:text-blue-400 transition-transform duration-200 ${
+                    calendarOpen ? "rotate-180 text-blue-400" : ""
+                  }`}
+                />
               </PopoverTrigger>
               <PopoverContent align="center" className="w-auto p-0 bg-[#111827] border-white/10">
                 <Calendar
@@ -389,10 +421,11 @@ export default function FutsalDashboard() {
               variant="ghost"
               size="icon"
               onClick={goNext}
-              className="text-slate-400 hover:text-white hover:bg-white/10"
+              className="size-9 rounded-xl border border-white/10 bg-white/[0.04] text-slate-300 hover:text-white hover:bg-white/[0.08] hover:border-white/20 active:scale-90 transition-all shadow-sm cursor-pointer"
               aria-label="Next day"
+              title="Next day"
             >
-              <ArrowRight className="size-5" />
+              <ArrowRight className="size-4" />
             </Button>
           </div>
 
