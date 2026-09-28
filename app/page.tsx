@@ -18,6 +18,8 @@ import {
   SunDim,
   GripVertical,
   RotateCcw,
+  Phone,
+  Pencil,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
@@ -162,6 +164,12 @@ export default function FutsalDashboard() {
     setPhoneInput("");
   };
 
+  const handleEditSlot = (slot: TimeSlot) => {
+    setEditingSlot(slot.time);
+    setPlayerInput(slot.playerName || "");
+    setPhoneInput(slot.phoneNumber || "");
+  };
+
   const confirmBooking = (time: string) => {
     const name = playerInput.trim();
     if (!name) return; // Name is mandatory
@@ -173,7 +181,7 @@ export default function FutsalDashboard() {
               status: "booked",
               playerName: name,
               phoneNumber: phoneInput.trim(),
-              paymentStatus: "paid",
+              paymentStatus: s.status === "booked" ? s.paymentStatus : "paid",
             }
           : s
       )
@@ -607,7 +615,7 @@ export default function FutsalDashboard() {
                   </button>
                 )}
 
-                {/* Booking Form */}
+                {/* Booking / Edit Form */}
                 {isEditing && (
                   <Card className="relative overflow-visible border-blue-500/40 bg-[#111827] ring-1 ring-blue-500/20">
                     {/* Header */}
@@ -617,7 +625,9 @@ export default function FutsalDashboard() {
                         <span className="text-xs font-semibold">
                           {formatTime(slot.time)}
                         </span>
-                        <span className="text-[10px] text-slate-500">• New Booking</span>
+                        <span className="text-[10px] text-slate-500">
+                          • {isBooked ? "Edit Booking" : "New Booking"}
+                        </span>
                       </div>
                       <button
                         onClick={() => setEditingSlot(null)}
@@ -654,11 +664,23 @@ export default function FutsalDashboard() {
 
                       {/* Phone Number - Optional */}
                       <div className="flex flex-col gap-1.5">
-                        <label className="flex items-center gap-1.5 text-[11px] font-medium uppercase tracking-wider text-slate-400">
-                          <Smartphone className="size-3" />
-                          Phone Number
-                          <span className="text-slate-600 normal-case tracking-normal">(optional)</span>
-                        </label>
+                        <div className="flex items-center justify-between">
+                          <label className="flex items-center gap-1.5 text-[11px] font-medium uppercase tracking-wider text-slate-400">
+                            <Smartphone className="size-3" />
+                            Phone Number
+                            <span className="text-slate-600 normal-case tracking-normal">(optional)</span>
+                          </label>
+                          {phoneInput.trim() && (
+                            <a
+                              href={`tel:${phoneInput.trim()}`}
+                              className="inline-flex items-center gap-1 rounded bg-blue-500/15 px-2 py-0.5 text-[11px] font-medium text-blue-400 hover:bg-blue-500/30 transition-colors cursor-pointer"
+                              title={`Call ${phoneInput.trim()}`}
+                            >
+                              <Phone className="size-2.5" />
+                              <span>Call</span>
+                            </a>
+                          )}
+                        </div>
                         <Input
                           type="tel"
                           placeholder="Enter phone number"
@@ -681,7 +703,7 @@ export default function FutsalDashboard() {
                           className="flex-1 h-9 gap-2 rounded-lg bg-blue-600 text-white font-semibold hover:bg-blue-500 disabled:opacity-40 disabled:cursor-not-allowed transition-all"
                         >
                           <BadgeCheck className="size-3.5" />
-                          Save Booking
+                          {isBooked ? "Update Booking" : "Save Booking"}
                         </Button>
                         <Button
                           variant="ghost"
@@ -696,9 +718,19 @@ export default function FutsalDashboard() {
                 )}
 
                 {/* Booked Slot */}
-                {isBooked && config && (
+                {isBooked && !isEditing && config && (
                   <div
-                    className={`relative flex items-center gap-3 rounded-xl border ${config.slotBorder} ${config.slotBg} px-4 py-3.5 transition-all`}
+                    onClick={() => handleEditSlot(slot)}
+                    role="button"
+                    tabIndex={0}
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter" || e.key === " ") {
+                        e.preventDefault();
+                        handleEditSlot(slot);
+                      }
+                    }}
+                    className={`group relative flex items-center gap-3 rounded-xl border ${config.slotBorder} ${config.slotBg} px-4 py-3.5 transition-all cursor-pointer hover:border-blue-500/50 hover:bg-white/[0.05] active:scale-[0.99]`}
+                    title="Tap to update booking details"
                   >
                     {/* Time + Player */}
                     <div className="flex flex-1 items-center gap-3 overflow-hidden">
@@ -708,44 +740,64 @@ export default function FutsalDashboard() {
                         </span>
                       </div>
                       <div className="min-w-0 flex-1">
-                        <p className="truncate text-sm font-semibold text-white">
-                          {slot.playerName}
-                        </p>
                         <div className="flex items-center gap-2">
-                          {slot.phoneNumber && (
-                            <span className="flex items-center gap-1 text-[11px] text-slate-500">
-                              <Smartphone className="size-2.5" />
-                              {slot.phoneNumber}
-                            </span>
-                          )}
-
+                          <p className="truncate text-sm font-semibold text-white">
+                            {slot.playerName}
+                          </p>
+                          <Pencil className="size-3 text-slate-500 opacity-0 group-hover:opacity-100 transition-opacity" />
                         </div>
+                        {slot.phoneNumber && (
+                          <div className="mt-1 flex items-center gap-2">
+                            <a
+                              href={`tel:${slot.phoneNumber}`}
+                              onClick={(e) => e.stopPropagation()}
+                              className="inline-flex items-center gap-1.5 rounded-full border border-blue-500/30 bg-blue-500/15 px-2.5 py-0.5 text-xs font-medium text-blue-400 hover:bg-blue-500/30 hover:border-blue-400 hover:text-blue-200 transition-all cursor-pointer shadow-sm active:scale-95"
+                              title={`Call ${slot.phoneNumber}`}
+                              aria-label={`Call ${slot.playerName} at ${slot.phoneNumber}`}
+                            >
+                              <Phone className="size-3 text-blue-400" />
+                              <span>{slot.phoneNumber}</span>
+                            </a>
+                          </div>
+                        )}
                       </div>
                     </div>
 
-                    {/* Payment Toggle Button */}
-                    <button
-                      onClick={() => togglePayment(slot.time)}
-                      className={`flex items-center gap-1.5 rounded-lg ${config.btnBg} px-3 py-1.5 transition-all active:scale-95`}
-                      id={`payment-${slot.time}`}
-                      aria-label={`Toggle payment: currently ${config.label}`}
-                    >
-                      <Sparkles className={`size-3 ${config.dotColor}`} />
-                      <span
-                        className={`text-xs font-semibold ${config.btnText}`}
+                    {/* Actions: Payment Toggle & Delete */}
+                    <div className="flex items-center gap-2">
+                      {/* Payment Toggle Button */}
+                      <button
+                        type="button"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          togglePayment(slot.time);
+                        }}
+                        className={`flex items-center gap-1.5 rounded-lg ${config.btnBg} px-3 py-1.5 transition-all active:scale-95 cursor-pointer`}
+                        id={`payment-${slot.time}`}
+                        aria-label={`Toggle payment: currently ${config.label}`}
                       >
-                        {config.label}
-                      </span>
-                    </button>
+                        <Sparkles className={`size-3 ${config.dotColor}`} />
+                        <span
+                          className={`text-xs font-semibold ${config.btnText}`}
+                        >
+                          {config.label}
+                        </span>
+                      </button>
 
-                    {/* Delete Button */}
-                    <button
-                      onClick={() => cancelBooking(slot.time)}
-                      className="flex items-center justify-center rounded-lg p-1.5 bg-red-500/10 text-red-400/70 transition-all hover:bg-red-500/20 hover:text-red-400 active:scale-95"
-                      aria-label={`Cancel booking for ${slot.playerName}`}
-                    >
-                      <Trash2 className="size-4" />
-                    </button>
+                      {/* Delete Button */}
+                      <button
+                        type="button"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          cancelBooking(slot.time);
+                        }}
+                        className="flex items-center justify-center rounded-lg p-1.5 bg-red-500/10 text-red-400/70 transition-all hover:bg-red-500/20 hover:text-red-400 active:scale-95 cursor-pointer"
+                        aria-label={`Cancel booking for ${slot.playerName}`}
+                        title="Cancel booking"
+                      >
+                        <Trash2 className="size-4" />
+                      </button>
+                    </div>
                   </div>
                 )}
               </div>
