@@ -2,6 +2,7 @@ import type { Metadata, Viewport } from "next";
 import { Inter } from "next/font/google";
 import "./globals.css";
 import { PwaProvider } from "@/components/pwa-provider";
+import { PostHogProvider } from "@/components/posthog-provider";
 
 const inter = Inter({
   variable: "--font-sans",
@@ -43,7 +44,9 @@ export default function RootLayout({ children }: LayoutProps<"/">) {
   return (
     <html lang="en" className={`${inter.variable} dark h-full antialiased`}>
       <body className="min-h-full flex flex-col bg-[#0a0e17]">
-        <PwaProvider>{children}</PwaProvider>
+        <PostHogProvider>
+          <PwaProvider>{children}</PwaProvider>
+        </PostHogProvider>
       </body>
     </html>
   );
