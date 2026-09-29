@@ -19,8 +19,9 @@ import {
   GripVertical,
   RotateCcw,
   Phone,
-  Pencil,
   ChevronDown,
+  Eye,
+  EyeOff,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
@@ -116,6 +117,16 @@ export default function FutsalDashboard() {
   const [playerInput, setPlayerInput] = useState("");
   const [phoneInput, setPhoneInput] = useState("");
   const [calendarOpen, setCalendarOpen] = useState(false);
+  const [hiddenSlots, setHiddenSlots] = useLocalStorage<string[]>("futsal-hidden-slots", []);
+  const [dateHiddenSlots, setDateHiddenSlots] = useLocalStorage<Record<string, string[]>>(
+    "futsal-date-hidden-slots",
+    {}
+  );
+  const [hideScope, setHideScope] = useLocalStorage<"all" | "date">("futsal-hide-scope", "all");
+  const [hiddenSectionOpen, setHiddenSectionOpen] = useState(true);
+  const [highlightHiddenBtn, setHighlightHiddenBtn] = useState(false);
+  const highlightTimerRef = useRef<NodeJS.Timeout | null>(null);
+  const hiddenSectionRef = useRef<HTMLDivElement>(null);
   const nameInputRef = useRef<HTMLInputElement>(null);
 
   const boundaries: SectionBoundaries = {
@@ -215,6 +226,86 @@ export default function FutsalDashboard() {
           : s
       )
     );
+  };
+
+  // ── Hide / Unhide Operations ──────────────────────────────────────
+  const isSlotHidden = useCallback(
+    (time: string) => {
+      const isGlobalHidden = (hiddenSlots || []).includes(time);
+      const isDateHidden = (dateHiddenSlots?.[dateKey] || []).includes(time);
+      return isGlobalHidden || isDateHidden;
+    },
+    [hiddenSlots, dateHiddenSlots, dateKey]
+  );
+
+  const getSlotHideType = useCallback(
+    (time: string): "all" | "date" | null => {
+      if ((hiddenSlots || []).includes(time)) return "all";
+      if ((dateHiddenSlots?.[dateKey] || []).includes(time)) return "date";
+      return null;
+    },
+    [hiddenSlots, dateHiddenSlots, dateKey]
+  );
+
+  const handleHideSlot = useCallback(
+    (time: string) => {
+      if (typeof navigator !== "undefined" && navigator.vibrate) navigator.vibrate(10);
+      if (hideScope === "all") {
+        setHiddenSlots((prev = []) => (prev.includes(time) ? prev : [...prev, time]));
+      } else {
+        setDateHiddenSlots((prev = {}) => {
+          const current = prev[dateKey] || [];
+          if (current.includes(time)) return prev;
+          return { ...prev, [dateKey]: [...current, time] };
+        });
+      }
+
+      // Highlight the unhide button in top bar with animation
+      setHighlightHiddenBtn(true);
+      if (highlightTimerRef.current) clearTimeout(highlightTimerRef.current);
+      highlightTimerRef.current = setTimeout(() => {
+        setHighlightHiddenBtn(false);
+      }, 5000);
+    },
+    [hideScope, dateKey, setHiddenSlots, setDateHiddenSlots]
+  );
+
+  const handleUnhideSlot = useCallback(
+    (time: string) => {
+      if (typeof navigator !== "undefined" && navigator.vibrate) navigator.vibrate(10);
+      setHiddenSlots((prev = []) => prev.filter((t) => t !== time));
+      setDateHiddenSlots((prev = {}) => {
+        if (!prev[dateKey]) return prev;
+        return {
+          ...prev,
+          [dateKey]: prev[dateKey].filter((t) => t !== time),
+        };
+      });
+    },
+    [dateKey, setHiddenSlots, setDateHiddenSlots]
+  );
+
+  const handleUnhideAll = useCallback(() => {
+    if (typeof navigator !== "undefined" && navigator.vibrate) navigator.vibrate(15);
+    const hiddenInToday = daySlots
+      .map((s) => s.time)
+      .filter((t) => isSlotHidden(t));
+
+    setHiddenSlots((prev = []) => prev.filter((t) => !hiddenInToday.includes(t)));
+    setDateHiddenSlots((prev = {}) => {
+      if (!prev[dateKey]) return prev;
+      return {
+        ...prev,
+        [dateKey]: [],
+      };
+    });
+  }, [daySlots, isSlotHidden, dateKey, setHiddenSlots, setDateHiddenSlots]);
+
+  const scrollToHiddenSection = () => {
+    setHiddenSectionOpen(true);
+    setTimeout(() => {
+      hiddenSectionRef.current?.scrollIntoView({ behavior: "smooth", block: "start" });
+    }, 50);
   };
 
   // ── Drag & Boundary Adjustments ──────────────────────────────────
@@ -326,7 +417,10 @@ export default function FutsalDashboard() {
     });
 
   // ── Stats ──────────────────────────────────────────────────────────
-  const bookedSlots = daySlots.filter((s) => s.status === "booked");
+  const hiddenSlotsForDay = daySlots.filter((s) => isSlotHidden(s.time));
+  const hiddenCount = hiddenSlotsForDay.length;
+  const visibleDaySlots = daySlots.filter((s) => !isSlotHidden(s.time));
+  const bookedSlots = visibleDaySlots.filter((s) => s.status === "booked");
   const paidCount = bookedSlots.filter((s) => s.paymentStatus === "paid").length;
   const unpaidCount = bookedSlots.filter((s) => s.paymentStatus === "unpaid").length;
 
@@ -443,6 +537,30 @@ export default function FutsalDashboard() {
                   {unpaidCount} unpaid
                 </span>
               )}
+              {hiddenCount > 0 && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    setHighlightHiddenBtn(false);
+                    scrollToHiddenSection();
+                  }}
+                  className={`flex items-center gap-1.5 rounded-full px-2.5 py-1 text-[11px] font-medium transition-all duration-300 cursor-pointer border ${
+                    highlightHiddenBtn
+                      ? "bg-blue-600/30 border-blue-400 text-blue-200 ring-2 ring-blue-500/60 shadow-lg shadow-blue-500/50 animate-pulse"
+                      : "bg-slate-800/80 hover:bg-slate-700/80 text-slate-300 border-slate-700/50 hover:border-slate-600"
+                  }`}
+                  title="Click to view and unhide hidden time slots"
+                >
+                  <EyeOff
+                    className={`size-3 transition-colors ${
+                      highlightHiddenBtn ? "text-blue-300" : "text-slate-400"
+                    }`}
+                  />
+                  <span className="font-semibold">
+                    {hiddenCount} hidden
+                  </span>
+                </button>
+              )}
             </div>
             <div className="flex items-center gap-2">
               <InstallButton />
@@ -520,7 +638,7 @@ export default function FutsalDashboard() {
             return sections.map((section) => {
               const sectionSlots = daySlots.filter((s) => {
                 const h = parseInt(s.time.split(":")[0], 10);
-                return h >= section.from && h <= section.to;
+                return h >= section.from && h <= section.to && !isSlotHidden(s.time);
               });
               if (sectionSlots.length === 0) return null;
 
@@ -632,17 +750,18 @@ export default function FutsalDashboard() {
                 {/* Available Slot */}
                 {!isBooked && !isEditing && (
                   <button
+                    type="button"
                     onClick={() => handleBookSlot(slot.time)}
-                    className="group flex w-full items-center gap-3 rounded-xl border border-dashed border-white/[0.08] bg-white/[0.02] px-4 py-3.5 transition-all hover:border-blue-500/30 hover:bg-blue-500/[0.04] active:scale-[0.99]"
+                    className="group flex w-full items-center gap-3 rounded-xl border border-dashed border-white/[0.08] bg-white/[0.02] px-4 py-3.5 transition-all hover:border-blue-500/30 hover:bg-blue-500/[0.04] active:scale-[0.99] cursor-pointer"
                     id={`slot-${slot.time}`}
                   >
-                    <div className="flex items-center gap-2 text-slate-600">
+                    <div className="flex items-center gap-2 text-slate-600 group-hover:text-slate-500 transition-colors">
                       <Timer className="size-3.5" />
                       <span className="text-xs font-medium">
                         {formatTime(slot.time)}
                       </span>
                     </div>
-                    <span className="text-xs text-slate-600 group-hover:text-blue-400/60">
+                    <span className="text-xs text-slate-600 group-hover:text-blue-400/70 transition-colors">
                       Tap to book
                     </span>
                   </button>
@@ -662,13 +781,30 @@ export default function FutsalDashboard() {
                           • {isBooked ? "Edit Booking" : "New Booking"}
                         </span>
                       </div>
-                      <button
-                        onClick={() => setEditingSlot(null)}
-                        className="rounded-md p-1 text-slate-500 transition-colors hover:bg-white/10 hover:text-white"
-                        aria-label="Cancel"
-                      >
-                        <XCircle className="size-4" />
-                      </button>
+                      <div className="flex items-center gap-2">
+                        {/* Eye icon to hide this row */}
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setEditingSlot(null);
+                            handleHideSlot(slot.time);
+                          }}
+                          className="flex items-center gap-1.5 rounded-lg border border-white/10 bg-white/[0.06] hover:bg-white/10 hover:border-blue-500/40 px-2.5 py-1 text-xs font-medium text-slate-200 hover:text-white active:scale-95 transition-all cursor-pointer shadow-sm"
+                          title={`Hide ${formatTime(slot.time)} time slot`}
+                        >
+                          <Eye className="size-3.5 text-blue-400" />
+                          <span>Hide</span>
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => setEditingSlot(null)}
+                          className="rounded-md p-1 text-slate-500 transition-colors hover:bg-white/10 hover:text-white cursor-pointer"
+                          aria-label="Cancel"
+                          title="Close"
+                        >
+                          <XCircle className="size-4" />
+                        </button>
+                      </div>
                     </div>
 
                     {/* Form Fields */}
@@ -777,7 +913,6 @@ export default function FutsalDashboard() {
                           <p className="truncate text-sm font-semibold text-white">
                             {slot.playerName}
                           </p>
-                          <Pencil className="size-3 text-slate-500 opacity-0 group-hover:opacity-100 transition-opacity" />
                         </div>
                         {slot.phoneNumber && (
                           <div className="mt-1 flex items-center gap-2">
@@ -797,7 +932,7 @@ export default function FutsalDashboard() {
                     </div>
 
                     {/* Actions: Payment Toggle & Delete */}
-                    <div className="flex items-center gap-2">
+                    <div className="flex items-center gap-1.5 sm:gap-2">
                       {/* Payment Toggle Button */}
                       <button
                         type="button"
@@ -842,8 +977,156 @@ export default function FutsalDashboard() {
         })()}
         </div>
 
+        {/* ── Hidden Slots Section ───────────────────────────────────── */}
+        {hiddenCount > 0 && (
+          <div
+            ref={hiddenSectionRef}
+            id="hidden-slots-section"
+            className="mt-8 flex flex-col gap-3 rounded-2xl border border-white/[0.08] bg-[#0d1220]/70 p-4 backdrop-blur-sm transition-all"
+          >
+            {/* Header */}
+            <div className="flex flex-wrap items-center justify-between gap-2 border-b border-white/[0.06] pb-3 select-none">
+              <div className="flex items-center gap-2">
+                <div className="flex items-center gap-1.5 rounded-full bg-slate-800/90 px-2.5 py-1 text-slate-300 border border-slate-700/60 shadow-sm">
+                  <EyeOff className="size-3.5 text-slate-400" />
+                  <span className="text-[11px] font-bold uppercase tracking-wider">
+                    Hidden Slots
+                  </span>
+                  <span className="ml-0.5 rounded-full bg-slate-700/80 px-1.5 py-0.2 text-[10px] font-semibold text-slate-200">
+                    {hiddenCount}
+                  </span>
+                </div>
+
+                {/* Scope Pill Toggle */}
+                <div className="flex items-center rounded-lg bg-white/[0.04] p-0.5 border border-white/10 text-[10px]">
+                  <button
+                    type="button"
+                    onClick={() => setHideScope("all")}
+                    className={`rounded-md px-2.5 py-1 font-medium transition-all ${
+                      hideScope === "all"
+                        ? "bg-blue-600 text-white shadow-sm"
+                        : "text-slate-400 hover:text-white"
+                    }`}
+                    title="When hiding a slot, hide it across all days"
+                  >
+                    All Days
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setHideScope("date")}
+                    className={`rounded-md px-2.5 py-1 font-medium transition-all ${
+                      hideScope === "date"
+                        ? "bg-blue-600 text-white shadow-sm"
+                        : "text-slate-400 hover:text-white"
+                    }`}
+                    title="When hiding a slot, hide it only for the selected date"
+                  >
+                    This Day Only
+                  </button>
+                </div>
+              </div>
+
+              <div className="flex items-center gap-2">
+                {/* Unhide All Button */}
+                <button
+                  type="button"
+                  onClick={handleUnhideAll}
+                  className="flex items-center gap-1.5 rounded-lg border border-white/10 bg-white/[0.04] px-2.5 py-1 text-xs font-medium text-slate-300 hover:bg-white/[0.08] hover:text-white active:scale-95 transition-all cursor-pointer"
+                  title="Restore all hidden slots"
+                >
+                  <RotateCcw className="size-3 text-slate-400" />
+                  <span>Unhide All</span>
+                </button>
+
+                {/* Collapse / Expand Toggle */}
+                <button
+                  type="button"
+                  onClick={() => setHiddenSectionOpen(!hiddenSectionOpen)}
+                  className="flex size-7 items-center justify-center rounded-lg text-slate-400 hover:bg-white/10 hover:text-white transition-all cursor-pointer"
+                  aria-label={hiddenSectionOpen ? "Collapse hidden slots" : "Expand hidden slots"}
+                >
+                  <ChevronDown
+                    className={`size-4 transition-transform duration-200 ${
+                      hiddenSectionOpen ? "rotate-180" : ""
+                    }`}
+                  />
+                </button>
+              </div>
+            </div>
+
+            {/* Hidden Slots List */}
+            {hiddenSectionOpen && (
+              <div className="flex flex-col gap-2 pt-1">
+                {hiddenSlotsForDay.map((slot) => {
+                  const isBooked = slot.status === "booked";
+                  const hideType = getSlotHideType(slot.time);
+
+                  return (
+                    <div
+                      key={`hidden-${slot.time}`}
+                      className="flex items-center justify-between gap-3 rounded-xl border border-white/[0.06] bg-white/[0.02] px-4 py-3 transition-all hover:border-white/10 hover:bg-white/[0.04]"
+                    >
+                      <div className="flex items-center gap-3">
+                        <div className="flex items-center gap-2 text-slate-400">
+                          <Timer className="size-3.5 text-slate-500" />
+                          <span className="text-xs font-semibold text-slate-200">
+                            {formatTime(slot.time)}
+                          </span>
+                        </div>
+
+                        {isBooked ? (
+                          <span className="rounded bg-blue-500/15 border border-blue-500/25 px-2 py-0.5 text-[11px] font-medium text-blue-400">
+                            Booked: {slot.playerName}
+                          </span>
+                        ) : (
+                          <span className="text-[11px] text-slate-500">
+                            Available
+                          </span>
+                        )}
+
+                        <span className="hidden sm:inline-block rounded bg-white/[0.04] px-1.5 py-0.5 text-[9px] text-slate-500 uppercase tracking-wider">
+                          {hideType === "all" ? "All days" : "This day"}
+                        </span>
+                      </div>
+
+                      {/* Unhide Button */}
+                      <button
+                        type="button"
+                        onClick={() => handleUnhideSlot(slot.time)}
+                        className="flex items-center gap-1.5 rounded-lg border border-blue-500/30 bg-blue-500/15 px-3 py-1 text-xs font-semibold text-blue-400 hover:bg-blue-500/25 hover:border-blue-500/50 hover:text-blue-300 active:scale-95 transition-all cursor-pointer"
+                        title={`Unhide ${formatTime(slot.time)} and show it back in the schedule`}
+                      >
+                        <Eye className="size-3.5" />
+                        <span>Unhide</span>
+                      </button>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+          </div>
+        )}
+
         {/* Empty State */}
-        {bookedSlots.length === 0 && (
+        {visibleDaySlots.length === 0 ? (
+          <div className="mt-12 flex flex-col items-center gap-2 text-center">
+            <div className="flex size-12 items-center justify-center rounded-full bg-white/[0.04]">
+              <EyeOff className="size-5 text-slate-500" />
+            </div>
+            <p className="text-sm text-slate-400">All time slots are hidden</p>
+            <p className="text-xs text-slate-600">
+              You can restore time slots using the Hidden Slots section below
+            </p>
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={handleUnhideAll}
+              className="mt-2 border-white/10 text-xs text-slate-300 hover:text-white"
+            >
+              Unhide All Slots
+            </Button>
+          </div>
+        ) : bookedSlots.length === 0 ? (
           <div className="mt-12 flex flex-col items-center gap-2 text-center">
             <div className="flex size-12 items-center justify-center rounded-full bg-white/[0.04]">
               <CalendarDays className="size-5 text-slate-600" />
@@ -853,7 +1136,7 @@ export default function FutsalDashboard() {
               Tap any time slot above to start booking
             </p>
           </div>
-        )}
+        ) : null}
       </main>
 
       {/* ── Footer ──────────────────────────────────────────────────── */}
