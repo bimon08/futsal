@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useRef, useEffect, useCallback } from "react";
+import { useState, useRef, useEffect, useCallback, useTransition } from "react";
 import {
   ArrowLeft,
   ArrowRight,
@@ -22,6 +22,8 @@ import {
   ChevronDown,
   Eye,
   EyeOff,
+  IndianRupee,
+  Pencil,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
@@ -32,8 +34,8 @@ import {
   PopoverTrigger,
   PopoverContent,
 } from "@/components/ui/popover";
-import { InstallButton } from "@/components/pwa-provider";
-import { useLocalStorage } from "@/lib/use-local-storage";
+import { InstallBanner } from "@/components/install-banner";
+// All settings are now stored in the database (no localStorage)
 import {
   type TimeSlot,
   type PaymentStatus,
@@ -45,6 +47,21 @@ import {
   formatHour,
   createEmptySlots,
 } from "@/lib/futsal-types";
+import {
+  getSchedule,
+  managerBookSlot,
+  updateBooking,
+  togglePaymentStatus,
+  cancelBooking as cancelBookingAction,
+  migrateLocalData,
+  getSectionPrices,
+  updateSectionPrices,
+  updateBoundaries,
+  updateHiddenSlots,
+  getBoundaries,
+  getHiddenSlots,
+  type SectionPrices,
+} from "@/lib/actions";
 
 // ─── Date Helpers ────────────────────────────────────────────────────────
 function toDateKey(date: Date): string {
@@ -105,9 +122,10 @@ const paymentConfig: Record<
 // ─── Main Page ───────────────────────────────────────────────────────────
 export default function FutsalDashboard() {
   const [selectedDate, setSelectedDate] = useState(new Date());
-  const [schedule, setSchedule] = useLocalStorage<DaySchedule>("futsal-schedule", {});
-  const [sectionBoundaries, setSectionBoundaries] = useLocalStorage<SectionBoundaries>(
-    "futsal-section-boundaries",
+  const [daySlots, setDaySlots] = useState<TimeSlot[]>(createEmptySlots());
+  const [loading, setLoading] = useState(true);
+  const [isPending, startTransition] = useTransition();
+  const [sectionBoundaries, setSectionBoundaries] = useState<SectionBoundaries>(
     DEFAULT_SECTION_BOUNDARIES
   );
   const [draggingBoundary, setDraggingBoundary] = useState<
@@ -117,17 +135,22 @@ export default function FutsalDashboard() {
   const [playerInput, setPlayerInput] = useState("");
   const [phoneInput, setPhoneInput] = useState("");
   const [calendarOpen, setCalendarOpen] = useState(false);
-  const [hiddenSlots, setHiddenSlots] = useLocalStorage<string[]>("futsal-hidden-slots", []);
-  const [dateHiddenSlots, setDateHiddenSlots] = useLocalStorage<Record<string, string[]>>(
-    "futsal-date-hidden-slots",
-    {}
-  );
-  const [hideScope, setHideScope] = useLocalStorage<"all" | "date">("futsal-hide-scope", "all");
+  const [hiddenSlots, setHiddenSlots] = useState<string[]>([]);
+  const [dateHiddenSlots, setDateHiddenSlots] = useState<Record<string, string[]>>({});
+  const [hideScope, setHideScope] = useState<"all" | "date">("all");
   const [hiddenSectionOpen, setHiddenSectionOpen] = useState(true);
   const [highlightHiddenBtn, setHighlightHiddenBtn] = useState(false);
   const highlightTimerRef = useRef<NodeJS.Timeout | null>(null);
   const hiddenSectionRef = useRef<HTMLDivElement>(null);
   const nameInputRef = useRef<HTMLInputElement>(null);
+
+  // ── Section Prices ─────────────────────────────────────────────
+  const [sectionPrices, setSectionPrices] = useState<SectionPrices>({
+    morning: "", afternoon: "", evening: "", night: "", currency: "₹",
+  });
+  const [editingPrice, setEditingPrice] = useState<string | null>(null);
+  const [priceInput, setPriceInput] = useState("");
+  const priceInputRef = useRef<HTMLInputElement>(null);
 
   const boundaries: SectionBoundaries = {
     morningStart: sectionBoundaries?.morningStart ?? DEFAULT_SECTION_BOUNDARIES.morningStart,
@@ -142,13 +165,144 @@ export default function FutsalDashboard() {
 
   const resetBoundaries = () => {
     setSectionBoundaries(DEFAULT_SECTION_BOUNDARIES);
+    updateBoundaries(DEFAULT_SECTION_BOUNDARIES);
     if (typeof navigator !== "undefined" && navigator.vibrate) navigator.vibrate(15);
   };
 
   const dateKey = toDateKey(selectedDate);
 
-  // Get or create slots for current day
-  const daySlots: TimeSlot[] = schedule[dateKey] || createEmptySlots();
+  // ── Load all settings from database on mount ───────────────────
+  useEffect(() => {
+    getSectionPrices().then(setSectionPrices).catch(() => {});
+    getBoundaries().then(setSectionBoundaries).catch(() => {});
+    getHiddenSlots().then(setHiddenSlots).catch(() => {});
+  }, []);
+
+  // Focus price input when editing
+  useEffect(() => {
+    if (editingPrice && priceInputRef.current) {
+      const timer = setTimeout(() => priceInputRef.current?.focus(), 50);
+      return () => clearTimeout(timer);
+    }
+  }, [editingPrice]);
+
+  const savePrice = (sectionId: string) => {
+    const newPrices = { ...sectionPrices, [sectionId]: priceInput.trim() };
+    setSectionPrices(newPrices);
+    setEditingPrice(null);
+    startTransition(async () => {
+      await updateSectionPrices(newPrices);
+    });
+  };
+
+  // ── Fetch schedule from database ───────────────────────────────────
+  const fetchSchedule = useCallback(async () => {
+    setLoading(true);
+    try {
+      const slots = await getSchedule(dateKey);
+      setDaySlots(slots);
+    } catch {
+      setDaySlots(createEmptySlots());
+    } finally {
+      setLoading(false);
+    }
+  }, [dateKey]);
+
+  useEffect(() => {
+    fetchSchedule();
+  }, [fetchSchedule]);
+
+  // ── One-time migration from localStorage to database ─────────────
+  // Migrates ALL local data: bookings, section boundaries, hidden slots
+  useEffect(() => {
+    const migrationKey = "futsal-data-migrated-v2"; // v2 to re-run for boundaries/hidden
+    if (typeof window === "undefined") return;
+    if (localStorage.getItem(migrationKey)) return;
+
+    const migrate = async () => {
+      try {
+        // 1. Migrate bookings
+        const rawSchedule = localStorage.getItem("futsal-schedule");
+        if (rawSchedule) {
+          const localSchedule: DaySchedule = JSON.parse(rawSchedule);
+          const hasBookings = Object.values(localSchedule).some(
+            (slots) => slots.some((s) => s.status === "booked")
+          );
+          if (hasBookings) {
+            const result = await migrateLocalData(localSchedule);
+            console.log(`[Migration] Migrated ${result.migrated} bookings, skipped ${result.skipped}`);
+          }
+        }
+
+        // 2. Migrate section boundaries
+        const rawBoundaries = localStorage.getItem("futsal-section-boundaries");
+        if (rawBoundaries) {
+          try {
+            const localBoundaries = JSON.parse(rawBoundaries);
+            if (localBoundaries && typeof localBoundaries === "object") {
+              await updateBoundaries({
+                morningStart: localBoundaries.morningStart ?? DEFAULT_SECTION_BOUNDARIES.morningStart,
+                afternoonStart: localBoundaries.afternoonStart ?? DEFAULT_SECTION_BOUNDARIES.afternoonStart,
+                eveningStart: localBoundaries.eveningStart ?? DEFAULT_SECTION_BOUNDARIES.eveningStart,
+              });
+              setSectionBoundaries(localBoundaries);
+              console.log("[Migration] Migrated section boundaries");
+            }
+          } catch { /* ignore parse errors */ }
+        }
+
+        // 3. Migrate hidden slots ("all days")
+        const rawHidden = localStorage.getItem("futsal-hidden-slots");
+        if (rawHidden) {
+          try {
+            const localHidden = JSON.parse(rawHidden);
+            if (Array.isArray(localHidden) && localHidden.length > 0) {
+              await updateHiddenSlots(localHidden);
+              setHiddenSlots(localHidden);
+              console.log(`[Migration] Migrated ${localHidden.length} hidden slots`);
+            }
+          } catch { /* ignore parse errors */ }
+        }
+
+        // 4. Migrate date-specific hidden slots (kept in state only — per-date)
+        const rawDateHidden = localStorage.getItem("futsal-date-hidden-slots");
+        if (rawDateHidden) {
+          try {
+            const localDateHidden = JSON.parse(rawDateHidden);
+            if (localDateHidden && typeof localDateHidden === "object") {
+              setDateHiddenSlots(localDateHidden);
+              console.log("[Migration] Migrated date-specific hidden slots");
+            }
+          } catch { /* ignore parse errors */ }
+        }
+
+        // 5. Migrate hide scope preference
+        const rawScope = localStorage.getItem("futsal-hide-scope");
+        if (rawScope) {
+          try {
+            const localScope = JSON.parse(rawScope);
+            if (localScope === "all" || localScope === "date") {
+              setHideScope(localScope);
+              console.log(`[Migration] Migrated hide scope: ${localScope}`);
+            }
+          } catch { /* ignore parse errors */ }
+        }
+
+        // Mark migration complete
+        localStorage.setItem(migrationKey, "true");
+        // Also mark old key so old migration doesn't re-run
+        localStorage.setItem("futsal-data-migrated", "true");
+
+        // Refresh schedule to show migrated data
+        fetchSchedule();
+      } catch (err) {
+        console.error("[Migration] Error:", err);
+        localStorage.setItem(migrationKey, "true");
+      }
+    };
+
+    migrate();
+  }, [fetchSchedule]);
 
   // Auto-focus name input when editing
   useEffect(() => {
@@ -159,17 +313,7 @@ export default function FutsalDashboard() {
     }
   }, [editingSlot]);
 
-  // ── Slot Operations ──────────────────────────────────────────────
-  const updateSlots = useCallback(
-    (updater: (slots: TimeSlot[]) => TimeSlot[]) => {
-      setSchedule((prev) => {
-        const currentSlots = prev[dateKey] || createEmptySlots();
-        return { ...prev, [dateKey]: updater(currentSlots) };
-      });
-    },
-    [dateKey, setSchedule]
-  );
-
+  // ── Slot Operations (via Server Actions) ───────────────────────────
   const handleBookSlot = (time: string) => {
     setEditingSlot(time);
     setPlayerInput("");
@@ -184,48 +328,42 @@ export default function FutsalDashboard() {
 
   const confirmBooking = (time: string) => {
     const name = playerInput.trim();
-    if (!name) return; // Name is mandatory
-    updateSlots((slots) =>
-      slots.map((s) =>
-        s.time === time
-          ? {
-              ...s,
-              status: "booked",
-              playerName: name,
-              phoneNumber: phoneInput.trim(),
-              paymentStatus: s.status === "booked" ? s.paymentStatus : "paid",
-            }
-          : s
-      )
-    );
-    setEditingSlot(null);
-    setPlayerInput("");
-    setPhoneInput("");
+    if (!name) return;
+
+    const slot = daySlots.find((s) => s.time === time);
+    const isUpdate = slot?.status === "booked";
+
+    startTransition(async () => {
+      let result: { success: boolean; error?: string };
+      if (isUpdate) {
+        result = await updateBooking(dateKey, time, name, phoneInput.trim());
+      } else {
+        result = await managerBookSlot(dateKey, time, name, phoneInput.trim());
+      }
+
+      if (!result.success) {
+        alert(result.error || "Failed to save booking.");
+      }
+
+      setEditingSlot(null);
+      setPlayerInput("");
+      setPhoneInput("");
+      await fetchSchedule();
+    });
   };
 
   const togglePayment = (time: string) => {
-    updateSlots((slots) =>
-      slots.map((s) =>
-        s.time === time
-          ? { ...s, paymentStatus: nextPaymentStatus(s.paymentStatus) }
-          : s
-      )
-    );
+    startTransition(async () => {
+      await togglePaymentStatus(dateKey, time);
+      await fetchSchedule();
+    });
   };
 
   const cancelBooking = (time: string) => {
-    updateSlots((slots) =>
-      slots.map((s) =>
-        s.time === time
-          ? {
-              ...s,
-              status: "available",
-              playerName: "",
-              paymentStatus: "unpaid",
-            }
-          : s
-      )
-    );
+    startTransition(async () => {
+      await cancelBookingAction(dateKey, time);
+      await fetchSchedule();
+    });
   };
 
   // ── Hide / Unhide Operations ──────────────────────────────────────
@@ -251,7 +389,12 @@ export default function FutsalDashboard() {
     (time: string) => {
       if (typeof navigator !== "undefined" && navigator.vibrate) navigator.vibrate(10);
       if (hideScope === "all") {
-        setHiddenSlots((prev = []) => (prev.includes(time) ? prev : [...prev, time]));
+        // "all days" — save to DB
+        setHiddenSlots((prev) => {
+          const next = prev.includes(time) ? prev : [...prev, time];
+          updateHiddenSlots(next);
+          return next;
+        });
       } else {
         setDateHiddenSlots((prev = {}) => {
           const current = prev[dateKey] || [];
@@ -267,14 +410,18 @@ export default function FutsalDashboard() {
         setHighlightHiddenBtn(false);
       }, 5000);
     },
-    [hideScope, dateKey, setHiddenSlots, setDateHiddenSlots]
+    [hideScope, dateKey]
   );
 
   const handleUnhideSlot = useCallback(
     (time: string) => {
       if (typeof navigator !== "undefined" && navigator.vibrate) navigator.vibrate(10);
-      setHiddenSlots((prev = []) => prev.filter((t) => t !== time));
-      setDateHiddenSlots((prev = {}) => {
+      setHiddenSlots((prev) => {
+        const next = prev.filter((t) => t !== time);
+        updateHiddenSlots(next);
+        return next;
+      });
+      setDateHiddenSlots((prev) => {
         if (!prev[dateKey]) return prev;
         return {
           ...prev,
@@ -282,7 +429,7 @@ export default function FutsalDashboard() {
         };
       });
     },
-    [dateKey, setHiddenSlots, setDateHiddenSlots]
+    [dateKey]
   );
 
   const handleUnhideAll = useCallback(() => {
@@ -291,15 +438,19 @@ export default function FutsalDashboard() {
       .map((s) => s.time)
       .filter((t) => isSlotHidden(t));
 
-    setHiddenSlots((prev = []) => prev.filter((t) => !hiddenInToday.includes(t)));
-    setDateHiddenSlots((prev = {}) => {
+    setHiddenSlots((prev) => {
+      const next = prev.filter((t) => !hiddenInToday.includes(t));
+      updateHiddenSlots(next);
+      return next;
+    });
+    setDateHiddenSlots((prev) => {
       if (!prev[dateKey]) return prev;
       return {
         ...prev,
         [dateKey]: [],
       };
     });
-  }, [daySlots, isSlotHidden, dateKey, setHiddenSlots, setDateHiddenSlots]);
+  }, [daySlots, isSlotHidden, dateKey]);
 
   const scrollToHiddenSection = () => {
     setHiddenSectionOpen(true);
@@ -376,6 +527,8 @@ export default function FutsalDashboard() {
       e.currentTarget.releasePointerCapture(e.pointerId);
     } catch (_) {}
     setDraggingBoundary(null);
+    // Save boundaries to DB after drag ends
+    updateBoundaries(boundaries);
   };
 
   const nudgeBoundary = (
@@ -397,7 +550,9 @@ export default function FutsalDashboard() {
         newHour = Math.max(current.afternoonStart + 1, Math.min(newHour, 23));
       }
       if (typeof navigator !== "undefined" && navigator.vibrate) navigator.vibrate(10);
-      return { ...current, [key]: newHour };
+      const next = { ...current, [key]: newHour };
+      updateBoundaries(next);
+      return next;
     });
   };
 
@@ -425,10 +580,15 @@ export default function FutsalDashboard() {
   const unpaidCount = bookedSlots.filter((s) => s.paymentStatus === "unpaid").length;
 
   return (
-    <div className="flex min-h-screen flex-col bg-[#0a0e17] text-white">
-      {/* ── Top Bar ─────────────────────────────────────────────────── */}
+    <div className="flex min-h-screen flex-col bg-[#0a0e17] text-white pb-20">
+      {/* ── Install Banner ────────────────────────────────────────── */}
+      <div className="pt-3">
+        <InstallBanner />
+      </div>
+
+      {/* ── Sticky Date Navigation ───────────────────────────────── */}
       <header className="sticky top-0 z-30 border-b border-white/[0.06] bg-[#0d1220]/90 backdrop-blur-xl">
-        <div className="mx-auto flex max-w-2xl flex-col gap-3 px-4 py-3">
+        <div className="mx-auto flex max-w-2xl flex-col gap-2.5 px-4 py-3">
           {/* Date Navigation */}
           <div className="flex items-center justify-between">
             <Button
@@ -523,7 +683,7 @@ export default function FutsalDashboard() {
             </Button>
           </div>
 
-          {/* Quick Stats, Install Action & Custom Boundaries Reset */}
+          {/* Quick Stats */}
           <div className="flex items-center justify-between text-[11px]">
             <div className="flex items-center gap-3">
               {bookedSlots.length > 0 && (
@@ -562,19 +722,16 @@ export default function FutsalDashboard() {
                 </button>
               )}
             </div>
-            <div className="flex items-center gap-2">
-              <InstallButton />
-              {isCustomBoundaries && (
-                <button
-                  onClick={resetBoundaries}
-                  className="flex items-center gap-1 text-slate-500 hover:text-slate-300 transition-colors"
-                  title="Reset section times to default (6 AM, 12 PM, 6 PM)"
-                >
-                  <RotateCcw className="size-2.5" />
-                  <span>Reset hours</span>
-                </button>
-              )}
-            </div>
+            {isCustomBoundaries && (
+              <button
+                onClick={resetBoundaries}
+                className="flex items-center gap-1 rounded-lg border border-white/10 bg-white/[0.04] px-2 py-1 text-[11px] text-slate-500 hover:text-slate-300 hover:bg-white/[0.08] transition-all cursor-pointer"
+                title="Reset section times to default (6 AM, 12 PM, 6 PM)"
+              >
+                <RotateCcw className="size-3" />
+                <span className="hidden sm:inline">Reset</span>
+              </button>
+            )}
           </div>
         </div>
       </header>
@@ -646,21 +803,72 @@ export default function FutsalDashboard() {
 
               return (
                 <div key={section.id} className="flex flex-col gap-2">
-                  {/* Section Header with Drag Handle */}
-                  <div className="flex items-center gap-2 pt-4 pb-1 select-none">
-                    {/* Section Badge */}
-                    <div
-                      className={`flex items-center gap-1.5 rounded-full ${section.bg} px-2.5 py-1 ${section.color} border ${section.border}`}
-                    >
-                      {section.icon}
-                      <span className="text-[11px] font-bold uppercase tracking-wider">
-                        {section.label}
+                  {/* Section Header */}
+                  <div className="flex flex-col gap-1.5 pt-4 pb-1 select-none">
+                    {/* Row 1: Badge + line + stats */}
+                    <div className="flex items-center gap-2">
+                      <div
+                        className={`flex items-center gap-1.5 rounded-full ${section.bg} px-2.5 py-1 ${section.color} border ${section.border}`}
+                      >
+                        {section.icon}
+                        <span className="text-[11px] font-bold uppercase tracking-wider">
+                          {section.label}
+                        </span>
+                      </div>
+
+                      {/* Price Pill (inline with badge) */}
+                      {editingPrice === section.id ? (
+                        <div className="flex items-center gap-1">
+                          <span className="text-[11px] text-slate-400">{sectionPrices.currency}</span>
+                          <input
+                            ref={priceInputRef}
+                            type="text"
+                            inputMode="numeric"
+                            value={priceInput}
+                            onChange={(e) => setPriceInput(e.target.value)}
+                            onKeyDown={(e) => {
+                              if (e.key === "Enter") savePrice(section.id);
+                              if (e.key === "Escape") setEditingPrice(null);
+                            }}
+                            onBlur={() => savePrice(section.id)}
+                            placeholder="0"
+                            className="w-16 rounded-md border border-blue-500/40 bg-blue-500/10 px-2 py-0.5 text-[11px] font-semibold text-white outline-none focus:ring-1 focus:ring-blue-500/40"
+                          />
+                        </div>
+                      ) : (
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setEditingPrice(section.id);
+                            setPriceInput(sectionPrices[section.id as keyof SectionPrices] || "");
+                          }}
+                          className={`flex items-center gap-1 rounded-full px-2 py-0.5 text-[10px] font-semibold transition-all cursor-pointer border ${
+                            sectionPrices[section.id as keyof SectionPrices]
+                              ? `${section.bg} ${section.color} ${section.border}`
+                              : "bg-white/[0.03] text-slate-600 border-dashed border-white/10 hover:border-white/20 hover:text-slate-400"
+                          }`}
+                          title={`Set price for ${section.label}`}
+                        >
+                          {sectionPrices[section.id as keyof SectionPrices] ? (
+                            <span>{sectionPrices.currency}{sectionPrices[section.id as keyof SectionPrices]}</span>
+                          ) : (
+                            <>
+                              <IndianRupee className="size-2.5" />
+                              <span>Set price</span>
+                            </>
+                          )}
+                        </button>
+                      )}
+
+                      <div className={`h-px flex-1 ${section.line}`} />
+                      <span className="text-[10px] text-slate-600 tabular-nums">
+                        {sectionSlots.filter((s) => s.status === "booked").length}/{sectionSlots.length}
                       </span>
                     </div>
 
-                    {/* Draggable Indicator Handle for adjustable sections */}
+                    {/* Row 2: Drag controls (only for adjustable sections) */}
                     {section.dragKey && (
-                      <div className="flex items-center gap-1">
+                      <div className="flex items-center gap-1 pl-1">
                         <button
                           type="button"
                           onPointerDown={(e) => e.stopPropagation()}
@@ -726,13 +934,12 @@ export default function FutsalDashboard() {
                         >
                           +
                         </button>
+
+                        <span className="text-[10px] text-slate-500 ml-1">
+                          Starts at {formatHour(section.from)}
+                        </span>
                       </div>
                     )}
-
-                    <div className={`h-px flex-1 ${section.line}`} />
-                    <span className="text-[10px] text-slate-600 tabular-nums">
-                      {sectionSlots.filter((s) => s.status === "booked").length}/{sectionSlots.length}
-                    </span>
                   </div>
 
                   {/* Slots in this section */}
@@ -1139,10 +1346,6 @@ export default function FutsalDashboard() {
         ) : null}
       </main>
 
-      {/* ── Footer ──────────────────────────────────────────────────── */}
-      <footer className="border-t border-white/[0.04] bg-[#0d1220]/50 py-3 text-center text-[10px] text-slate-600">
-        Futsal Manager • Data stored locally on this device
-      </footer>
     </div>
   );
 }

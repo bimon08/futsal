@@ -1,0 +1,115 @@
+// This is your Prisma schema file,
+// learn more about it in the docs: https://pris.ly/d/prisma-schema
+
+generator client {
+  provider = "prisma-client"
+  output   = "../lib/generated/prisma"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+// ─── Auth.js Models ──────────────────────────────────────────────────
+
+model User {
+  id            String    @id @default(uuid())
+  name          String?
+  email         String    @unique
+  emailVerified DateTime? @map("email_verified")
+  image         String?
+  createdAt     DateTime  @default(now()) @map("created_at")
+  updatedAt     DateTime  @updatedAt @map("updated_at")
+
+  accounts Account[]
+  sessions Session[]
+  tenant   Tenant?
+
+  @@map("users")
+}
+
+model Account {
+  id                String  @id @default(uuid())
+  userId            String  @map("user_id")
+  type              String
+  provider          String
+  providerAccountId String  @map("provider_account_id")
+  refresh_token     String?
+  access_token      String?
+  expires_at        Int?
+  token_type        String?
+  scope             String?
+  id_token          String?
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([provider, providerAccountId])
+  @@map("accounts")
+}
+
+model Session {
+  id           String   @id @default(uuid())
+  sessionToken String   @unique @map("session_token")
+  userId       String   @map("user_id")
+  expires      DateTime
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@map("sessions")
+}
+
+// ─── Tenant (Venue) ──────────────────────────────────────────────────
+
+model Tenant {
+  id           String   @id @default(uuid())
+  userId       String   @unique @map("user_id")
+  slug         String   @unique
+  venueName    String   @map("venue_name")
+  description  String   @default("")
+  address      String   @default("")
+  slotDuration String   @default("1 hr") @map("slot_duration")
+  logoUrl      String?  @map("logo_url")
+  createdAt    DateTime @default(now()) @map("created_at")
+  updatedAt    DateTime @updatedAt @map("updated_at")
+
+  user     User           @relation(fields: [userId], references: [id], onDelete: Cascade)
+  bookings Booking[]
+  settings CourtSetting[]
+
+  @@map("tenants")
+}
+
+// ─── Bookings ────────────────────────────────────────────────────────
+
+model Booking {
+  id            String   @id @default(uuid())
+  tenantId      String   @map("tenant_id")
+  bookingDate   DateTime @map("booking_date") @db.Date
+  timeSlot      String   @map("time_slot")
+  playerName    String   @map("player_name")
+  phoneNumber   String   @default("") @map("phone_number")
+  paymentStatus String   @default("unpaid") @map("payment_status")
+  source        String   @default("player") // "player" or "manager"
+  createdAt     DateTime @default(now()) @map("created_at")
+
+  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  // Prevent double-booking per tenant
+  @@unique([tenantId, bookingDate, timeSlot])
+  @@index([tenantId, bookingDate])
+  @@map("bookings")
+}
+
+// ─── Court Settings ──────────────────────────────────────────────────
+
+model CourtSetting {
+  tenantId  String   @map("tenant_id")
+  key       String
+  value     Json     @default("{}")
+  updatedAt DateTime @default(now()) @updatedAt @map("updated_at")
+
+  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  @@id([tenantId, key])
+  @@map("court_settings")
+}
