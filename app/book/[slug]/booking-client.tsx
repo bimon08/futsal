@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useRef, useEffect, useCallback, useTransition } from "react";
+import { useState, useRef, useEffect, useCallback, useTransition, useMemo } from "react";
 import {
   ArrowLeft,
   ArrowRight,
@@ -17,6 +17,8 @@ import {
   CloudSun,
   SunMedium,
   SunDim,
+  ClockAlert,
+  Trash2,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -35,6 +37,79 @@ import {
 } from "@/lib/futsal-types";
 import { getPublicSchedule, bookSlot } from "@/lib/actions";
 import type { SectionPrices, GalleryItem } from "@/lib/actions";
+
+// ─── Pending Booking Types ───────────────────────────────────────────
+interface PendingBooking {
+  tenantId: string;
+  dateKey: string;
+  timeSlot: string;
+  playerName: string;
+  phoneNumber: string;
+  bookedAt: number; // timestamp
+}
+
+const PENDING_BOOKINGS_KEY = "futsal-pending-bookings";
+const PENDING_EXPIRY_MS = 48 * 60 * 60 * 1000; // 48 hours — auto-clean old entries
+
+function loadPendingBookings(): PendingBooking[] {
+  if (typeof window === "undefined") return [];
+  try {
+    const raw = localStorage.getItem(PENDING_BOOKINGS_KEY);
+    if (!raw) return [];
+    const parsed = JSON.parse(raw) as PendingBooking[];
+    // Filter out expired entries
+    const now = Date.now();
+    return parsed.filter((b) => now - b.bookedAt < PENDING_EXPIRY_MS);
+  } catch {
+    return [];
+  }
+}
+
+function savePendingBookings(bookings: PendingBooking[]) {
+  if (typeof window === "undefined") return;
+  try {
+    // Clean expired before saving
+    const now = Date.now();
+    const clean = bookings.filter((b) => now - b.bookedAt < PENDING_EXPIRY_MS);
+    localStorage.setItem(PENDING_BOOKINGS_KEY, JSON.stringify(clean));
+  } catch {
+    // Silently fail if localStorage is unavailable
+  }
+}
+
+function addPendingBooking(booking: PendingBooking) {
+  const existing = loadPendingBookings();
+  // Avoid duplicates
+  const filtered = existing.filter(
+    (b) =>
+      !(b.tenantId === booking.tenantId &&
+        b.dateKey === booking.dateKey &&
+        b.timeSlot === booking.timeSlot)
+  );
+  filtered.push(booking);
+  savePendingBookings(filtered);
+}
+
+function removePendingBooking(tenantId: string, dateKey: string, timeSlot: string) {
+  const existing = loadPendingBookings();
+  const filtered = existing.filter(
+    (b) =>
+      !(b.tenantId === tenantId &&
+        b.dateKey === dateKey &&
+        b.timeSlot === timeSlot)
+  );
+  savePendingBookings(filtered);
+}
+
+function getPendingForDate(tenantId: string, dateKey: string): PendingBooking[] {
+  return loadPendingBookings().filter(
+    (b) => b.tenantId === tenantId && b.dateKey === dateKey
+  );
+}
+
+function getAllPendingForTenant(tenantId: string): PendingBooking[] {
+  return loadPendingBookings().filter((b) => b.tenantId === tenantId);
+}
 
 // ─── Date Helpers ────────────────────────────────────────────────────
 function toDateKey(date: Date): string {
@@ -119,11 +194,24 @@ export function BookingClient({
   const [bookingSuccess, setBookingSuccess] = useState<string | null>(null);
   const [bookingError, setBookingError] = useState<string | null>(null);
   const [isPending, startTransition] = useTransition();
+  const [pendingVersion, setPendingVersion] = useState(0); // bump to re-read localStorage
   const nameInputRef = useRef<HTMLInputElement>(null);
   const formRef = useRef<HTMLDivElement>(null);
 
   const boundaries: SectionBoundaries = sectionBoundaries;
   const dateKey = toDateKey(selectedDate);
+
+  // ── Pending bookings from localStorage ────────────────────────────
+  const pendingForDate = useMemo(
+    () => getPendingForDate(tenantId, dateKey),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [tenantId, dateKey, pendingVersion]
+  );
+  const allMyPending = useMemo(
+    () => getAllPendingForTenant(tenantId),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [tenantId, pendingVersion]
+  );
 
   // ── Fetch schedule ────────────────────────────────────────────────
   const fetchSchedule = useCallback(async () => {
@@ -131,6 +219,18 @@ export function BookingClient({
     try {
       const slots = await getPublicSchedule(tenantId, dateKey);
       setDaySlots(slots);
+
+      // Reconcile: if server now shows a pending slot as "booked", remove from localStorage
+      const currentPending = getPendingForDate(tenantId, dateKey);
+      let cleaned = false;
+      for (const pb of currentPending) {
+        const serverSlot = slots.find((s) => s.time === pb.timeSlot);
+        if (serverSlot && serverSlot.status === "booked") {
+          removePendingBooking(tenantId, dateKey, pb.timeSlot);
+          cleaned = true;
+        }
+      }
+      if (cleaned) setPendingVersion((v) => v + 1);
     } catch {
       setDaySlots([]);
     } finally {
@@ -175,6 +275,17 @@ export function BookingClient({
     startTransition(async () => {
       const result = await bookSlot(tenantId, dateKey, selectedSlot, name, phone);
       if (result.success) {
+        // Save to localStorage so the user sees it as "Pending"
+        addPendingBooking({
+          tenantId,
+          dateKey,
+          timeSlot: selectedSlot,
+          playerName: name,
+          phoneNumber: phone,
+          bookedAt: Date.now(),
+        });
+        setPendingVersion((v) => v + 1);
+
         setBookingSuccess(selectedSlot);
         setSelectedSlot(null);
         setPlayerInput("");
@@ -185,6 +296,11 @@ export function BookingClient({
         setBookingError(result.error || "Booking failed.");
       }
     });
+  };
+
+  const handleRemovePending = (dateKeyToRemove: string, timeSlot: string) => {
+    removePendingBooking(tenantId, dateKeyToRemove, timeSlot);
+    setPendingVersion((v) => v + 1);
   };
 
   // ── Date Navigation ───────────────────────────────────────────────
@@ -405,28 +521,38 @@ export function BookingClient({
                     const isBooked = slot.status === "booked";
                     const justBooked = bookingSuccess === slot.time;
                     const past = isPastDate(selectedDate);
+                    const myPending = pendingForDate.find((p) => p.timeSlot === slot.time);
+                    const isPendingSlot = !!myPending && isAvailable; // only show pending if server still says available
 
                     return (
                       <button
                         key={slot.time}
-                        onClick={() => isAvailable && !past && handleSelectSlot(slot.time)}
-                        disabled={!isAvailable || past}
+                        onClick={() => isAvailable && !isPendingSlot && !past && handleSelectSlot(slot.time)}
+                        disabled={!isAvailable || past || isPendingSlot}
                         className={`
                           relative rounded-xl border px-3 py-3 text-sm font-medium transition-all duration-200 cursor-pointer
                           ${isSelected
                             ? "border-emerald-500 bg-emerald-500/20 text-emerald-300 ring-1 ring-emerald-500/50 scale-[1.02] shadow-lg shadow-emerald-500/10"
-                            : isBooked || justBooked
-                              ? "border-white/[0.06] bg-white/[0.02] text-slate-600 cursor-not-allowed"
-                              : "border-white/10 bg-white/[0.04] text-white hover:border-emerald-500/40 hover:bg-emerald-500/5 hover:text-emerald-300 active:scale-95"
+                            : isPendingSlot
+                              ? "border-amber-500/30 bg-amber-500/10 text-amber-300 cursor-default"
+                              : isBooked || justBooked
+                                ? "border-white/[0.06] bg-white/[0.02] text-slate-600 cursor-not-allowed"
+                                : "border-white/10 bg-white/[0.04] text-white hover:border-emerald-500/40 hover:bg-emerald-500/5 hover:text-emerald-300 active:scale-95"
                           }
-                          ${(!isAvailable || past) ? "opacity-50 cursor-not-allowed" : ""}
+                          ${(!isAvailable || past) && !isPendingSlot ? "opacity-50 cursor-not-allowed" : ""}
                         `}
                       >
                         <span className="font-mono text-xs">{formatTime(slot.time)}</span>
+                        {isPendingSlot && (
+                          <span className="mt-0.5 flex items-center justify-center gap-0.5 text-[10px] text-amber-400 font-normal">
+                            <ClockAlert className="size-2.5" />
+                            Pending
+                          </span>
+                        )}
                         {isBooked && (
                           <span className="mt-0.5 block text-[10px] text-slate-600 font-normal">Booked</span>
                         )}
-                        {isAvailable && !past && (
+                        {isAvailable && !isPendingSlot && !past && (
                           <span className="mt-0.5 block text-[10px] text-emerald-500/60 font-normal">Available</span>
                         )}
                       </button>
@@ -508,6 +634,62 @@ export function BookingClient({
                     )}
                     {isPending ? "Booking..." : "Confirm Booking"}
                   </button>
+                </div>
+              </div>
+            )}
+            {/* ── My Bookings Section ──────────────────────────── */}
+            {allMyPending.length > 0 && (
+              <div className="mt-8 rounded-2xl border border-amber-500/20 bg-amber-500/[0.04] p-4">
+                <h3 className="mb-3 flex items-center gap-2 text-sm font-semibold text-amber-300">
+                  <ClockAlert className="size-4" />
+                  My Pending Bookings
+                </h3>
+                <p className="mb-3 text-xs text-slate-500">
+                  These bookings are awaiting confirmation from the venue. They&apos;ll appear as &quot;Booked&quot; once confirmed.
+                </p>
+                <div className="space-y-2">
+                  {allMyPending
+                    .sort((a, b) => {
+                      if (a.dateKey !== b.dateKey) return a.dateKey.localeCompare(b.dateKey);
+                      return a.timeSlot.localeCompare(b.timeSlot);
+                    })
+                    .map((pb) => {
+                      const bookDate = new Date(pb.dateKey + "T00:00:00");
+                      const isCurrentDate = pb.dateKey === dateKey;
+                      return (
+                        <div
+                          key={`${pb.dateKey}-${pb.timeSlot}`}
+                          className={`flex items-center justify-between rounded-lg border px-3 py-2 text-xs transition-colors ${
+                            isCurrentDate
+                              ? "border-amber-500/30 bg-amber-500/10"
+                              : "border-white/[0.06] bg-white/[0.03]"
+                          }`}
+                        >
+                          <div className="flex flex-col gap-0.5">
+                            <span className="font-medium text-white">
+                              {formatTime(pb.timeSlot)}
+                              <span className="ml-2 font-normal text-slate-400">
+                                {bookDate.toLocaleDateString("en-US", {
+                                  weekday: "short",
+                                  month: "short",
+                                  day: "numeric",
+                                })}
+                              </span>
+                            </span>
+                            <span className="text-slate-500">
+                              {pb.playerName} · {pb.phoneNumber}
+                            </span>
+                          </div>
+                          <button
+                            onClick={() => handleRemovePending(pb.dateKey, pb.timeSlot)}
+                            className="rounded-md p-1.5 text-slate-500 hover:bg-red-500/10 hover:text-red-400 transition-colors cursor-pointer"
+                            title="Remove from my bookings"
+                          >
+                            <Trash2 className="size-3.5" />
+                          </button>
+                        </div>
+                      );
+                    })}
                 </div>
               </div>
             )}
